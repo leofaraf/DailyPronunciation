@@ -1,104 +1,62 @@
-use teloxide::{dispatching::dialogue::InMemStorage, prelude::*};
-use teloxide::types::Voice;
+use std::collections::HashMap;
+use base64::encode;
+use log::debug;
+use teloxide::net::{Download, download_file};
+use teloxide::payloads::GetFile;
+use teloxide::prelude::*;
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
 
-type MyDialogue = Dialogue<State, InMemStorage<State>>;
-type HandlerResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
-
-#[derive(Clone, Default)]
-pub enum State {
-    #[default]
-    Start,
-    ReceiveFullName,
-    ReceiveAge {
-        full_name: Voice,
-    },
-    ReceiveLocation {
-        full_name: Voice,
-        age: u8,
-    },
-}
 
 #[tokio::main]
 async fn main() {
     pretty_env_logger::init();
-    log::info!("Starting dialogue bot...");
+    debug!("Starting throw dice bot...");
 
     let bot = Bot::from_env();
 
-    Dispatcher::builder(
-        bot,
-        Update::filter_message()
-            .enter_dialogue::<Message, InMemStorage<State>, State>()
-            .branch(dptree::case![State::Start].endpoint(start))
-            .branch(dptree::case![State::ReceiveFullName].endpoint(receive_full_name))
-            .branch(dptree::case![State::ReceiveAge { full_name }].endpoint(receive_age))
-            .branch(
-                dptree::case![State::ReceiveLocation { full_name, age }].endpoint(receive_location),
-            ),
-    )
-        .dependencies(dptree::deps![InMemStorage::<State>::new()])
-        .enable_ctrlc_handler()
-        .build()
-        .dispatch()
-        .await;
-}
+    teloxide::repl(bot, |bot: Bot, msg: Message| async move {
+        match msg.voice() {
+            Some(voice) => {
+                let download_path = "audio.ogg"; // Путь для загрузки голосового сообщения
+                let base64_path = "base64.txt";
 
-async fn start(bot: Bot, dialogue: MyDialogue, msg: Message) -> HandlerResult {
-    bot.send_message(msg.chat.id, "Let's start! What's your full name?").await?;
-    dialogue.update(State::ReceiveFullName).await?;
-    Ok(())
-}
+                let file = bot.get_file(&voice.file.id).await?;
+                // Open a file for writing and pass a mutable reference to it
+                let mut dst = File::create(download_path).await?;
 
-async fn receive_full_name(bot: Bot, dialogue: MyDialogue, msg: Message) -> HandlerResult {
-    match msg.voice() {
-        Some(text) => {
-            bot.send_message(msg.chat.id, "How old are you?").await?;
-            dialogue.update(State::ReceiveAge { full_name: text.clone() }).await?;
-        }
-        None => {
-            bot.send_message(msg.chat.id, "Send me plain text.").await?;
-        }
-    }
+                // Download the voice message and write it to the file
+                bot.download_file(&file.path, &mut dst).await?;
 
-    Ok(())
-}
+                // Read the downloaded file into bytes
+                let voice_bytes = tokio::fs::read(download_path).await?;
 
-async fn receive_age(
-    bot: Bot,
-    dialogue: MyDialogue,
-    full_name: Voice, // Available from `State::ReceiveAge`.
-    msg: Message,
-) -> HandlerResult {
-    match msg.text().map(|text| text.parse::<u8>()) {
-        Some(Ok(age)) => {
-            bot.send_message(msg.chat.id, "What's your location?").await?;
-            dialogue.update(State::ReceiveLocation { full_name, age }).await?;
-        }
-        _ => {
-            bot.send_message(msg.chat.id, "Send me a number.").await?;
-        }
-    }
+                // Encode the voice message as Base64
+                let base64_encoded = encode(&voice_bytes);
 
-    Ok(())
-}
 
-async fn receive_location(
-    bot: Bot,
-    dialogue: MyDialogue,
-    (full_name, age): (Voice, u8), // Available from `State::ReceiveLocation`.
-    msg: Message,
-) -> HandlerResult {
-    match msg.text() {
-        Some(location) => {
-            let duration = full_name.duration;
-            let report = format!("Full name: {duration}\nAge: {age}\nLocation: {location}");
-            bot.send_message(msg.chat.id, report).await?;
-            dialogue.exit().await?;
-        }
-        None => {
-            bot.send_message(msg.chat.id, "Send me plain text.").await?;
-        }
-    }
+                let mut map = HashMap::new();
+                map.insert("base64Audio", "");
+                map.insert("language", "en");
+                map.insert("title", "That, isn't important for you to know.");
 
-    Ok(())
+
+                let client = reqwest::Client::new();
+                let response = client.post("localhost:3000/GetAccuracyFromRecordedAudio")
+                    .body("&map")
+                    .send()
+                    .await?
+                    .text()
+                    .await?;
+
+                println!("{}", response);
+                // Send a message with the result
+                bot.send_message(msg.chat.id, "Voice message successfully encoded to Base64.").await?
+            }
+            None => {
+                bot.send_message(msg.chat.id, "Send a voice, please!").await?
+            }
+        };
+        Ok(())
+    }).await;
 }
