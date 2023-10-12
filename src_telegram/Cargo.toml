@@ -11,4 +11,6 @@ log = "0.4"
 pretty_env_logger = "0.4"
 reqwest = "0.11.18"
 base64 = "0.21.2"
+serde = { version = "1.0.178", features = ["derive"] }
 tokio = { version =  "1.8", features = ["rt-multi-thread", "macros"] }
+ansi_term = "0.12.1"

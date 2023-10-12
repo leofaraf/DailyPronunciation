@@ -1,12 +1,22 @@
+mod ai;
+
 use std::collections::HashMap;
+use std::ops::Add;
+use std::str::FromStr;
+use ansi_term::Style;
 use base64::encode;
-use log::debug;
+use log::{debug, error};
+use serde::{Deserialize, Serialize};
 use teloxide::net::{Download, download_file};
 use teloxide::payloads::GetFile;
 use teloxide::prelude::*;
+use teloxide::types::MessageEntityKind::Underline;
+use teloxide::types::ParseMode;
+use teloxide::types::ParseMode::{Html, MarkdownV2};
+use teloxide::utils::html::underline;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
-
+use crate::ai::{AccuracyRequest, AccuracyResponse};
 
 #[tokio::main]
 async fn main() {
@@ -34,27 +44,49 @@ async fn main() {
                 // Encode the voice message as Base64
                 let base64_encoded = encode(&voice_bytes);
 
+                error!("{}", base64_encoded);
 
-                let mut map = HashMap::new();
-                map.insert("base64Audio", "");
-                map.insert("language", "en");
-                map.insert("title", "That, isn't important for you to know.");
+                let sample_string = "That, isn't important for you to know.";
 
+                let body = AccuracyRequest {
+                    base64audio: "data:audio/ogg;;base64,".to_string() + &base64_encoded,
+                    language: "en".to_string(),
+                    title: sample_string.to_string(),
+                };
 
                 let client = reqwest::Client::new();
-                let response = client.post("localhost:3000/GetAccuracyFromRecordedAudio")
-                    .body("&map")
+                let response: AccuracyResponse = client.post("http://localhost:3000/GetAccuracyFromRecordedAudio")
+                    .json(&body)
                     .send()
                     .await?
-                    .text()
+                    .json()
                     .await?;
 
-                println!("{}", response);
+                fn highlight_zeros(text1: &str, text2: String) -> String {
+                    text1
+                        .chars()
+                        .zip(text2.chars())
+                        .map(|(c1, c2)| {
+                            if c2 == '0' {
+                                format!("<u>{c1}</u>")
+                            } else {
+                                c1.to_string()
+                            }
+                        })
+                        .collect()
+                }
+
+                let highlight = highlight_zeros(sample_string, response.is_letter_correct_all_words);
+                let finaltext = format!("{highlight}\n\
+                Pronunciation accuracy: {}%\n\
+                Say please again: \"{}\"", response.pronunciation_accuracy, sample_string);
+
                 // Send a message with the result
-                bot.send_message(msg.chat.id, "Voice message successfully encoded to Base64.").await?
+                bot.send_message(msg.chat.id, finaltext).parse_mode(Html).await?
+
             }
             None => {
-                bot.send_message(msg.chat.id, "Send a voice, please!").await?
+                bot.send_message(msg.chat.id, "Send a voice where you will say: \"That, isn't important for you to know.\"").await?
             }
         };
         Ok(())
